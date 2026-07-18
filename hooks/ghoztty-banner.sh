@@ -1,23 +1,27 @@
 #!/bin/bash
 # ghoztty-banner.sh — keep a Ghoztty pane banner current for a Claude Code session.
 #
-# Banner layout: the title as an h4 heading on its own line (rendered
-# slightly larger than the rows by a heading-aware Ghoztty), then the
-# remaining fields as a key/value table (empty header row so the label
-# column stays narrow) with bold labels below it:
-#   #### <title>
+# Banner layout: the title as an `## ` h2 heading on its own line (larger than
+# the body text), then a key/value table (empty header row so the label column
+# stays narrow), then the "Last result" block and PR link below it:
+#   ## <title>
 #   |  |  |
 #   |---|---|
 #   | **Goal** | <goal> |
+#   | **Last prompt** | <asked> |
 #   | **Status** | <status> · <activity> |
-#   | **You asked** | <asked> |
-#   | **What I did** | <did> |
-#   | **PR** | [<url>](<url>) |
+#   **Last result**
+#   <did>                     # plain-language summary; may be a multi-line
+#                             # checklist ("- [x] item" per line) that a table
+#                             # cell can't hold, so it lives below the table
+#   **PR** [<url>](<url>)
 #
-# "You asked"/"What I did" are model-provided paraphrases (set --asked/--did);
-# each is auto-seeded from the raw prompt / last tool action as a fallback.
-# The PR cell is a clickable markdown link. Fields persist in a per-tty state
-# file, so each call only passes what changed.
+# "Last prompt"/"Last result" are model-provided paraphrases (set --asked/--did):
+# "Last prompt" is a plain-language paraphrase of the user's prompt (not a
+# verbatim quote); "Last result" summarizes what was done for it. Each is
+# auto-seeded from the raw prompt / last tool action as a fallback. The PR is a
+# clickable markdown link. Fields persist in a per-tty state file, so each call
+# only passes what changed.
 # Delivery: ghoztty +set-banner CLI (multi-line + tables) targeting the
 # cached/resolved pane name; falls back to a single-line OSC 7778 write to the
 # tty device when the pane can't be resolved (the OSC parser drops newlines, so
@@ -27,9 +31,10 @@
 #   ghoztty-banner.sh set [--title T] [--goal G] [--status S] [--asked A] [--did D] [--pr URL]
 #   ghoztty-banner.sh status <text>     # shorthand for set --status
 #   ghoztty-banner.sh activity <text>   # hook-owned suffix (working/idle)
-#   ghoztty-banner.sh prompt-hook       # UserPromptSubmit: seed "You asked", clear "What I did", activity=working
-#   ghoztty-banner.sh stop-hook         # Stop: activity=idle + drop closed/merged PR
-#   ghoztty-banner.sh posttool-hook     # PostToolUse: auto-seed "What I did" from stdin JSON
+#   ghoztty-banner.sh prompt-hook       # UserPromptSubmit: activity=working + context JSON
+#   ghoztty-banner.sh session-start-hook # SessionStart(startup|clear): wipe + clear banner
+#   ghoztty-banner.sh stop-hook         # Stop: activity=idle
+#   ghoztty-banner.sh posttool-hook     # PostToolUse: set "Last action" from stdin JSON
 #   ghoztty-banner.sh clear
 #
 # Silently no-ops when not running inside Ghoztty.
@@ -147,20 +152,29 @@ render() {
             rows="$rows\n| **$1** | $(esc_cell "$2") |"
         }
         add_row "Goal" "$goal"
+        add_row "Last prompt" "$asked"
         add_row "Status" "$statline"
-        add_row "You asked" "$asked"
-        add_row "What I did" "$did"
-        [ -n "$pr" ] && rows="$rows\n| **PR** | $(pr_link "$pr") |"
 
-        # Title as an h4 heading on its own line above the table (a
-        # heading-aware Ghoztty renders it slightly larger than the rows).
-        # The table keeps an empty header row so its label column stays as
-        # narrow as the labels.
+        # Title as an `## ` h2 heading on its own line above the table, so it
+        # reads larger than the body. The table keeps an empty header row so
+        # its label column stays as narrow as the labels.
         local text=""
-        [ -n "$title" ] && text="#### $title"
+        [ -n "$title" ] && text="## $title"
         if [ -n "$rows" ]; then
             [ -n "$text" ] && text="$text\n"
             text="$text|  |  |\n|---|---|$rows"
+        fi
+        # "Last result" lives below the table as its own block: it may be a
+        # multi-line checklist/bullet list (items joined with \n by the model),
+        # which a single-line table cell can't hold. Passed raw so its own \n
+        # line breaks survive to the renderer.
+        if [ -n "$did" ]; then
+            [ -n "$text" ] && text="$text\n"
+            text="$text**Last result**\n$did"
+        fi
+        if [ -n "$pr" ]; then
+            [ -n "$text" ] && text="$text\n"
+            text="$text**PR** $(pr_link "$pr")"
         fi
         ghoztty +set-banner --target="$pane" "$text" >/dev/null 2>&1 && return 0
     fi
@@ -174,9 +188,9 @@ render() {
         line="$line**$1:** $2"
     }
     add_seg "Goal" "$goal"
+    add_seg "Last prompt" "$asked"
     add_seg "Status" "$statline"
-    add_seg "You asked" "$asked"
-    add_seg "What I did" "$did"
+    add_seg "Last result" "$did"
     [ -n "$pr" ] && { [ -n "$line" ] && line="$line$sep"; line="$line**PR:** $(pr_link "$pr")"; }
     send_osc "$line"
 }
@@ -230,17 +244,44 @@ prompt-hook)
     asked=$(printf '%s' "$input" | jq -r '.prompt // empty' 2>/dev/null | head -n1)
     asked=$(sanitize "$asked")
     [ ${#asked} -gt 100 ] && asked="${asked:0:97}..."
+
     # A new ask starts fresh: clear "What I did" so the previous turn's work
     # isn't shown until something new actually happens this turn.
-    if [ -n "$asked" ]; then
-        jq_merge activity "working" did "" asked "$asked"
-    else
-        jq_merge activity "working" did ""
+    pairs=(activity "working" did "")
+    [ -n "$asked" ] && pairs+=(asked "$asked")
+
+    # The state file is keyed by tty, so a fresh Claude session starting in a
+    # pane inherits the PREVIOUS session's task fields (title/goal/status/pr).
+    # Detect a new session by its id and wipe the stale task identity, so a
+    # fresh context begins with a blank banner instead of another session's
+    # task. A resumed session keeps its id, so its banner is preserved.
+    session=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+    if [ -n "$session" ] && [ "$session" != "$(read_field session)" ]; then
+        pairs+=(session "$session" title "" goal "" status "" pr "" last "")
     fi
+
+    jq_merge "${pairs[@]}"
     render
     cat <<'EOF'
-{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"This session runs in a Ghoztty pane with a persistent status banner. Keep it current: run `~/.claude/scripts/ghoztty-banner.sh set --title '<short task title>' --goal '<current goal>' --status '<one-line progress note>' [--asked '<paraphrase of what the user last asked>'] [--did '<paraphrase of the last thing you did>'] [--pr <url>]` when a task starts, whenever the goal/status meaningfully changes, and when a PR is created. Keep --asked and --did as short human-readable paraphrases (not raw tool names); refresh --did as you finish meaningful steps. Fields persist between calls — pass only what changed (e.g. `... set --status 'tests passing' --did 'wrote the docs'`)."}}
+{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"This session runs in a Ghoztty pane with a persistent status banner. Keep it current: run `~/.claude/scripts/ghoztty-banner.sh set --title '<short task title>' --goal '<current goal>' --status '<one-line progress note>' [--asked '<plain-language paraphrase of the user's last prompt, NOT a verbatim quote>'] [--did '<plain-language summary of what you did for this prompt>'] [--pr <url>]` when a task starts, whenever the goal/status meaningfully changes, and when a PR is created. --asked shows as 'Last prompt' and --did as 'Last result'; keep both as short human-readable paraphrases (never raw tool names or quotes). For --did, when you did more than one thing, pass a checklist with one item per line using \\n, e.g. --did '- [x] Renamed the fields\\n- [x] Moved Last prompt above Status\\n- [x] Made the title an h2'. Refresh --did as you finish meaningful steps. Fields persist between calls, so pass only what changed."}}
 EOF
+    ;;
+session-start-hook)
+    # Fires on SessionStart. `/clear` (source=clear) and a fresh launch
+    # (source=startup) begin a new task in this pane, so wipe the previous
+    # session's task identity AND clear the on-screen banner immediately —
+    # don't wait for the next prompt to blank stale data. `resume`/`compact`
+    # continue the same task, so their banners are left untouched (this hook
+    # is registered with a `startup|clear` matcher, so it isn't called then).
+    input=$(cat)
+    session=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
+    pane=$(resolve_pane)
+    [ -n "$pane" ] && ghoztty +set-banner --target="$pane" --clear >/dev/null 2>&1
+    # Reset task fields but keep the resolved pane cache; record the new id so
+    # the prompt-hook doesn't re-wipe on this session's first prompt.
+    pairs=(title "" goal "" status "" asked "" did "" pr "" last "" activity "")
+    [ -n "$session" ] && pairs+=(session "$session")
+    jq_merge "${pairs[@]}"
     ;;
 stop-hook)
     jq_merge activity "idle"
@@ -291,7 +332,7 @@ clear)
     send_osc ""
     ;;
 *)
-    echo "usage: ghoztty-banner.sh set|status|activity|prompt-hook|stop-hook|posttool-hook|clear" >&2
+    echo "usage: ghoztty-banner.sh set|status|activity|prompt-hook|session-start-hook|stop-hook|posttool-hook|clear" >&2
     exit 2
     ;;
 esac

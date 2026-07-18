@@ -9,6 +9,16 @@
             "command": "mkdir -p ~/.claude/scripts && ln -sf \"${CLAUDE_PLUGIN_ROOT}/hooks/ghoztty-banner.sh\" ~/.claude/scripts/ghoztty-banner.sh"
           }
         ]
+      },
+      {
+        "matcher": "startup|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/ghoztty-banner.sh\" session-start-hook",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
