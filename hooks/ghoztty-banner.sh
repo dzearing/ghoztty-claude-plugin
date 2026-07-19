@@ -8,6 +8,7 @@
 #   |  |  |
 #   |---|---|
 #   | **Goal** | <goal> |
+#   | **Bugs fixed** | <bug links> |   # only when the task is a bug fix
 #   | **Prompt** | <asked> |
 #   | **Status** | <status> · <activity> |
 #   **Last result**
@@ -21,8 +22,10 @@
 # quote) and is auto-seeded from the raw prompt as a fallback; "Last result"
 # names only the actual code fixes/features that landed this turn and is set
 # ONLY by the model's explicit --did (never auto-seeded from tool calls, which
-# are steps, not results). The PR is a clickable markdown link. Fields persist
-# in a per-tty state file, so each call only passes what changed.
+# are steps, not results). "Bugs fixed" (--bugs) is set only when the prompt is
+# fixing a specific bug, and holds clickable markdown link(s) to the bug(s). The
+# PR is a clickable markdown link. Fields persist in a per-tty state file, so
+# each call only passes what changed.
 # Delivery: ghoztty +set-banner CLI (multi-line + tables) targeting the
 # cached/resolved pane name; falls back to a single-line OSC 7778 write to the
 # tty device when the pane can't be resolved (the OSC parser drops newlines, so
@@ -122,7 +125,7 @@ resolve_pane() {
 }
 
 render() {
-    local title goal status activity asked did pr
+    local title goal status activity asked did pr bugs
     title=$(read_field title)
     goal=$(read_field goal)
     status=$(read_field status)
@@ -130,9 +133,10 @@ render() {
     asked=$(read_field asked)
     did=$(read_field did)
     pr=$(read_field pr)
+    bugs=$(read_field bugs)
 
     # Nothing meaningful set yet (only activity): don't paint a banner.
-    if [ -z "$title$goal$status$asked$did$pr" ]; then
+    if [ -z "$title$goal$status$asked$did$pr$bugs" ]; then
         return 0
     fi
 
@@ -155,6 +159,7 @@ render() {
             rows="$rows\n| **$1** | $(esc_cell "$2") |"
         }
         add_row "Goal" "$goal"
+        add_row "Bugs fixed" "$bugs"
         add_row "Prompt" "$asked"
         add_row "Status" "$statline"
 
@@ -191,6 +196,7 @@ render() {
         line="$line**$1:** $2"
     }
     add_seg "Goal" "$goal"
+    add_seg "Bugs fixed" "$bugs"
     add_seg "Prompt" "$asked"
     add_seg "Status" "$statline"
     add_seg "Last result" "$did"
@@ -204,7 +210,7 @@ shift 2>/dev/null || true
 case "$cmd" in
 set)
     pairs=()
-    newtitle=""; newtitle_set=0; pr_set=0; did_set=0
+    newtitle=""; newtitle_set=0; pr_set=0; did_set=0; bugs_set=0
     while [ $# -gt 0 ]; do
         case "$1" in
         --title)  newtitle=$(sanitize "${2:-}"); newtitle_set=1; pairs+=(title "$newtitle"); shift 2 ;;
@@ -212,22 +218,26 @@ set)
         --status) pairs+=(status "$(sanitize "${2:-}")"); shift 2 ;;
         --asked)  pairs+=(asked "$(sanitize "${2:-}")"); shift 2 ;;
         --did)    did_set=1; pairs+=(did "$(sanitize "${2:-}")"); shift 2 ;;
+        --bugs)   bugs_set=1; pairs+=(bugs "$(sanitize "${2:-}")"); shift 2 ;;
         --pr)     pr_set=1; pairs+=(pr "$(sanitize "${2:-}")"); shift 2 ;;
         --title=*)  newtitle=$(sanitize "${1#*=}"); newtitle_set=1; pairs+=(title "$newtitle"); shift ;;
         --goal=*)   pairs+=(goal "$(sanitize "${1#*=}")"); shift ;;
         --status=*) pairs+=(status "$(sanitize "${1#*=}")"); shift ;;
         --asked=*)  pairs+=(asked "$(sanitize "${1#*=}")"); shift ;;
         --did=*)    did_set=1; pairs+=(did "$(sanitize "${1#*=}")"); shift ;;
+        --bugs=*)   bugs_set=1; pairs+=(bugs "$(sanitize "${1#*=}")"); shift ;;
         --pr=*)     pr_set=1; pairs+=(pr "$(sanitize "${1#*=}")"); shift ;;
         *) shift ;;
         esac
     done
     # A changed title means a new task: drop fields that would otherwise
-    # linger from the previous one (a stale PR link, the old "What I did"),
-    # but never clobber a value passed explicitly in this same call.
+    # linger from the previous one (a stale PR link, the old "Last result", a
+    # prior bug reference), but never clobber a value passed explicitly in this
+    # same call.
     if [ "$newtitle_set" = 1 ] && [ "$newtitle" != "$(read_field title)" ]; then
-        [ "$pr_set" = 1 ]  || pairs+=(pr "")
-        [ "$did_set" = 1 ] || pairs+=(did "")
+        [ "$pr_set" = 1 ]   || pairs+=(pr "")
+        [ "$did_set" = 1 ]  || pairs+=(did "")
+        [ "$bugs_set" = 1 ] || pairs+=(bugs "")
     fi
     [ ${#pairs[@]} -gt 0 ] && jq_merge "${pairs[@]}"
     render
@@ -260,13 +270,13 @@ prompt-hook)
     # task. A resumed session keeps its id, so its banner is preserved.
     session=$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null)
     if [ -n "$session" ] && [ "$session" != "$(read_field session)" ]; then
-        pairs+=(session "$session" title "" goal "" status "" pr "" last "")
+        pairs+=(session "$session" title "" goal "" status "" pr "" bugs "" last "")
     fi
 
     jq_merge "${pairs[@]}"
     render
     cat <<'EOF'
-{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"This session runs in a Ghoztty pane with a persistent status banner. Keep it current: run `~/.claude/scripts/ghoztty-banner.sh set --title '<short task title>' --goal '<current goal>' --status '<one-line progress note>' [--asked '<plain-language paraphrase of the user's last prompt, NOT a verbatim quote>'] [--did '<the actual code fix/feature that landed>'] [--pr <url>]` when a task starts, whenever the goal/status meaningfully changes, and when a PR is created. --asked shows as 'Prompt' and --did as 'Last result'; keep both as short human-readable paraphrases (never raw tool names or quotes). IMPORTANT: --did is for ACTUAL fixes/features applied to the code, set it only once real changes have landed — never for exploration, reads, or intermediate tool calls (those are steps, not results); leave it alone until then. When more than one fix landed, pass a checklist with one item per line using \\n, e.g. --did '- [x] Renamed Last prompt to Prompt\\n- [x] Stopped auto-seeding Last result from tool calls'. Fields persist between calls, so pass only what changed."}}
+{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"This session runs in a Ghoztty pane with a persistent status banner. Keep it current: run `~/.claude/scripts/ghoztty-banner.sh set --title '<short task title>' --goal '<current goal>' --status '<one-line progress note>' [--asked '<plain-language paraphrase of the user's last prompt, NOT a verbatim quote>'] [--did '<the actual code fix/feature that landed>'] [--bugs '<markdown link(s) to the bug(s) being fixed>'] [--pr <url>]` when a task starts, whenever the goal/status meaningfully changes, and when a PR is created. --asked shows as 'Prompt' and --did as 'Last result'; keep both as short human-readable paraphrases (never raw tool names or quotes). IMPORTANT: --did is for ACTUAL fixes/features applied to the code, set it only once real changes have landed — never for exploration, reads, or intermediate tool calls (those are steps, not results); leave it alone until then. When more than one fix landed, pass a checklist with one item per line using \\n, e.g. --did '- [x] Renamed Last prompt to Prompt\\n- [x] Stopped auto-seeding Last result from tool calls'. When the prompt is fixing a specific bug (an issue link, a bug id, or a clearly identified defect), set --bugs to a clickable markdown link to it, e.g. --bugs '[#123](https://github.com/org/repo/issues/123)' (comma-separate multiple); it shows as a 'Bugs fixed' row under Goal. Omit --bugs entirely when the task is not a bug fix. Fields persist between calls, so pass only what changed."}}
 EOF
     ;;
 session-start-hook)
@@ -282,7 +292,7 @@ session-start-hook)
     [ -n "$pane" ] && ghoztty +set-banner --target="$pane" --clear >/dev/null 2>&1
     # Reset task fields but keep the resolved pane cache; record the new id so
     # the prompt-hook doesn't re-wipe on this session's first prompt.
-    pairs=(title "" goal "" status "" asked "" did "" pr "" last "" activity "")
+    pairs=(title "" goal "" status "" asked "" did "" pr "" bugs "" last "" activity "")
     [ -n "$session" ] && pairs+=(session "$session")
     jq_merge "${pairs[@]}"
     ;;

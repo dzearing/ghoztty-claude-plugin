@@ -1,7 +1,7 @@
 {
   "name": "ghoztty",
   "description": "Control Ghoztty terminal windows and panes from Claude Code — open windows, create split layouts, read pane output, send keystrokes, and manage layouts via CLI — plus a live per-pane status banner that tracks the session's task, status, and PR",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "David Zearing"
   },
