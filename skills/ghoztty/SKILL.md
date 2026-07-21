@@ -105,6 +105,62 @@ ghoztty +new-window --target=notes --command="nvim NOTES.md"
 ghoztty +split --target=notes --direction=right --name=preview --view=NOTES.md
 ```
 
+### Auto-preview conventions (build → show it beside the work)
+
+When you produce something previewable, **show it in a viewer pane automatically**
+— don't wait to be asked, and don't paste raw output into the terminal. Use a
+**1/3 ⁄ 2/3 layout**: work panes stacked vertically in the left third, the
+preview filling the right two-thirds. The `--split-percent=66` gives the new
+right pane 2/3 of the width, leaving 1/3 for your work column.
+
+**Trigger 1 — you author or edit a Markdown design doc / README / spec.**
+Open it in a right-hand 2/3 viewer. Markdown viewers **live-reload on save**, so
+you set this up once and every edit re-renders automatically (no `+reload`).
+
+```bash
+# From your working pane: doc preview fills the right 2/3
+ghoztty +split --direction=right --split-percent=66 --name=preview --view=docs/design/spec.md
+# ...keep editing docs/design/spec.md — the preview re-renders on each save.
+```
+
+**Trigger 2 — you scaffold or edit a mock HTML app / prototype.**
+An HTML *file* opened with `--view` renders as syntax-highlighted **source**, not
+a live page — so **host it** and view the URL. Run a static server (or the app's
+own dev server) in a work pane in the left third, then point the preview at its
+URL. URL viewers do **not** auto-reload, so `+reload` the preview after edits.
+
+```bash
+# 1. Serve the app from a work pane stacked below your session (left third)
+ghoztty +split --direction=down --name=server \
+  --working-directory=/path/to/app --command="python3 -m http.server 8000"
+#    (framework app? use its dev server instead, e.g. --command="npm run dev")
+
+# 2. Preview the running app in the right 2/3
+ghoztty +split --direction=right --split-percent=66 --name=preview \
+  --view=http://localhost:8000
+
+# 3. After each edit, refresh the preview (URL viewers don't live-reload)
+ghoztty +reload --target=preview
+```
+
+**Locking the exact 1/3-stacked ⁄ 2/3-preview layout.** When you have several
+work panes and want them tiled deterministically in the left third with the
+preview pinned to the right 2/3, name every pane and `+rearrange`:
+
+```bash
+ghoztty +rearrange --target=<window> --layout='{
+  "direction": "horizontal",
+  "ratio": 33,
+  "left": {
+    "direction": "vertical",
+    "ratio": 50,
+    "left": {"pane": "session"},
+    "right": {"pane": "server"}
+  },
+  "right": {"pane": "preview"}
+}'
+```
+
 ### `ghoztty +reload`
 
 Reload a named **viewer pane** in place — no close/reopen. Website viewers re-fetch the page from origin (bypassing caches); file viewers re-render the file preserving scroll position. Local file viewers already live-reload on save, so this mainly matters for `--view=<url>` panes (e.g. refresh a dev-server preview after a rebuild).
@@ -577,3 +633,4 @@ Closing a nonexistent target is a no-op, so teardown scripts are safe even if so
 - **Don't use sequential `+new-window` then `+split`** for the initial layout — use `--split` and `--split-command` on `+new-window` for atomicity.
 - **Don't assume `--working-directory` propagates to `--split-command`** — the split pane must `cd` explicitly if it needs the same directory.
 - **Don't `less`/`cat`/`open` a file to show it in a pane** — that dumps raw text (unrendered markdown) or opens an external app. Use `+split --view=<path>` for a rendered, live-reloading viewer pane.
+- **Don't leave a design doc or mock HTML app preview-less** — when you author Markdown or scaffold an HTML prototype, auto-open it in a right-hand 2/3 viewer (see *Auto-preview conventions*). Markdown live-reloads; for an HTML app, serve it and `--view` the URL, then `+reload` the preview after edits (`--view` of an `.html` file shows source, not a live page).
