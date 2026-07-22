@@ -1,7 +1,7 @@
 {
   "name": "ghoztty",
-  "description": "Control Ghoztty terminal windows and panes from Claude Code \u2014 open windows, create split layouts, open files/docs/websites in rendered viewer (side) panes, read pane output, send keystrokes, and manage layouts via CLI \u2014 plus a live per-pane status banner that tracks the session's task, status, and PR",
-  "version": "0.6.2",
+  "description": "Control Ghoztty terminal windows and panes from Claude Code \u2014 open windows, create split layouts, open files/docs/websites in rendered viewer (side) panes, read pane output, send keystrokes, and manage layouts via CLI \u2014 plus a live per-pane status banner that tracks the session's task, status, and PR, and a /process-feedback loop that drains the viewer's feedback-report queue",
+  "version": "0.7.0",
   "author": {
     "name": "David Zearing"
   },
@@ -16,6 +16,7 @@
     "ipc",
     "status-banner",
     "viewer-panes",
-    "markdown-preview"
+    "markdown-preview",
+    "feedback-queue"
   ]
 }

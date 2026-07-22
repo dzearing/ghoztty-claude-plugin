@@ -11,6 +11,7 @@ With this skill installed, Claude Code can:
 - Rearrange split layouts declaratively while preserving terminal state
 - Rename windows and track activity state (`idle` / `busy` / `needs_input`)
 - Keep a live per-pane **status banner** for the session (see below)
+- Work through feedback you file from a viewer pane, with **`/process-feedback`** (see below)
 
 ## Status banner
 
@@ -29,6 +30,33 @@ so you can see at a glance what the session is doing:
 
 The banner requires a Ghoztty build with banner support (`+set-banner`, markdown
 tables, and headings); on older builds the hooks silently no-op.
+
+## `/process-feedback`
+
+Ghoztty's viewer panes have a feedback button that files a report — your
+message, any screenshots, and the passages you quoted — into
+`<worktree>/temp/feedback/new/` as one self-contained folder.
+
+`/process-feedback` is the other half: it drains that queue in the current
+worktree, **one report per context**, so a long backlog never runs out of room
+to think.
+
+```
+claim oldest  →  plan  →  reproduce  →  fix (TDD)  →  validate  →  commit  →  reset context  →  next
+```
+
+- Reports move `new/` → `in-progress/` → `complete/`, one `mv` per transition.
+  Anything it can't finish confidently goes to `blocked/` with a written
+  question for you, rather than a guessed fix.
+- It reproduces before diagnosing, and drives testable defects with a failing
+  test first.
+- Progress lives in `in-progress/<report>/notes.md`, so a context reset mid-report
+  resumes instead of restarting.
+- It commits each completed report; it never pushes or merges.
+- An empty queue arms a watcher and picks up the next report as it lands.
+
+The queue sits under `temp/`, which is gitignored by convention, so filed
+reports never show up in `git status`.
 
 ## Prerequisites
 
